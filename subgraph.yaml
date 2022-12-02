@@ -1,4 +1,4 @@
-specVersion: 0.0.4
+specVersion: 0.0.5
 schema:
   file: ./schema.graphql
 dataSources:
@@ -90,6 +90,8 @@ templates:
           handler: handleTransfer
         - event: Sync(uint256,uint256)
           handler: handleSync
+        - event: FeesChanged(uint256)
+          handler: handleFeesChanged
 
   - kind: ethereum/contract
     name: GaugeTemplate
@@ -167,6 +169,8 @@ templates:
           handler: handleDeposit
         - event: Withdraw(indexed address,uint256,uint256,uint256)
           handler: handleWithdraw
+        - event: Transfer(indexed address,indexed address,indexed uint256)
+          handler: handleTransfer
 
   - kind: ethereum/contract
     name: VoterTemplate

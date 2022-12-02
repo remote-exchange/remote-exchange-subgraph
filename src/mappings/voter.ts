@@ -1,16 +1,6 @@
 // noinspection JSUnusedGlobalSymbols
 
-import {
-  BribeEntity,
-  GaugeEntity,
-  GaugeRewardToken,
-  GaugeUser,
-  Pair,
-  Token, VeDistEntity,
-  VeEntity,
-  VeNFTEntity,
-  Vote
-} from '../types/schema'
+import {BribeEntity, GaugeAttachment, GaugeEntity, Pair, Token, VeEntity, VeNFTEntity, Vote} from '../types/schema'
 import {BribeTemplate, GaugeTemplate} from '../types/templates';
 import {ZERO_BD, ZERO_BI} from './constants';
 import {
@@ -18,7 +8,8 @@ import {
   Attach,
   Deposit,
   Detach,
-  GaugeCreated, Voted,
+  GaugeCreated,
+  Voted,
   VoterAbi,
   Whitelisted,
   Withdraw
@@ -67,20 +58,20 @@ export function handleWhitelisted(event: Whitelisted): void {
 }
 
 export function handleDeposit(event: Deposit): void {
-  const gaugeUser = getOrCreateGaugeUser(event.params.gauge.toHexString(), event.params.lp.toHexString());
-  gaugeUser.deposit = gaugeUser.deposit.plus(formatUnits(event.params.amount, BigInt.fromI32(18)))
-  gaugeUser.veNFT = event.params.tokenId.toString()
-  gaugeUser.save();
+  const gaugeAttachment = getOrCreateGaugeAttachment(event.params.gauge.toHexString(), event.params.lp.toHexString());
+  gaugeAttachment.deposit = gaugeAttachment.deposit.plus(formatUnits(event.params.amount, BigInt.fromI32(18)))
+  gaugeAttachment.veNFT = event.params.tokenId.toString()
+  gaugeAttachment.save();
 }
 
 export function handleWithdraw(event: Withdraw): void {
-  const gaugeUser = getOrCreateGaugeUser(event.params.gauge.toHexString(), event.params.lp.toHexString());
-  gaugeUser.deposit = gaugeUser.deposit.minus(formatUnits(event.params.amount, BigInt.fromI32(18)));
+  const gaugeAttachment = getOrCreateGaugeAttachment(event.params.gauge.toHexString(), event.params.lp.toHexString());
+  gaugeAttachment.deposit = gaugeAttachment.deposit.minus(formatUnits(event.params.amount, BigInt.fromI32(18)));
   // emit with veId means full withdraw and unlock ve
   if (event.params.tokenId.notEqual(ZERO_BI)) {
-    gaugeUser.veNFT = null;
+    gaugeAttachment.veNFT = null;
   }
-  gaugeUser.save();
+  gaugeAttachment.save();
 }
 
 export function handleAttach(event: Attach): void {
@@ -122,12 +113,12 @@ export function handleAbstained(event: Abstained): void {
       }
 
       updateGaugeVotes(
-        vote.gauge,
-        voterCtr,
-        vote.pool,
-        totalWeight,
-        weekly,
-        ve.underlying
+          vote.gauge,
+          voterCtr,
+          vote.pool,
+          totalWeight,
+          weekly,
+          ve.underlying
       );
 
       store.remove('Vote', veNft.voteIds[i]);
@@ -143,7 +134,7 @@ export function handleAbstained(event: Abstained): void {
 // *****************************************************
 
 function getOrCreateGauge(
-  gaugeAdr: string
+    gaugeAdr: string
 ): GaugeEntity {
   let gauge = GaugeEntity.load(gaugeAdr)
 
@@ -158,9 +149,11 @@ function getOrCreateGauge(
     gauge.pair = gaugeCtr.underlying().toHex()
     gauge.totalSupply = ZERO_BD
     gauge.totalSupplyETH = ZERO_BD
+    gauge.totalDerivedSupply = ZERO_BD
     gauge.voteWeight = ZERO_BD
     gauge.expectedAmount = ZERO_BD
     gauge.expectAPR = ZERO_BD
+    gauge.expectAPRDerived = ZERO_BD
     gauge.totalWeight = ZERO_BD
     gauge.rewardTokensAddresses = []
     GaugeTemplate.create(Address.fromString(gaugeAdr))
@@ -176,10 +169,10 @@ function getVeNFT(veId: string): VeNFTEntity {
   return ve as VeNFTEntity;
 }
 
-function getOrCreateGaugeUser(gaugeAdr: string, userAdr: string): GaugeUser {
-  let user = GaugeUser.load(gaugeAdr + userAdr);
+function getOrCreateGaugeAttachment(gaugeAdr: string, userAdr: string): GaugeAttachment {
+  let user = GaugeAttachment.load(gaugeAdr + userAdr);
   if (!user) {
-    user = new GaugeUser(gaugeAdr + userAdr);
+    user = new GaugeAttachment(gaugeAdr + userAdr);
     user.gauge = gaugeAdr
     user.user = userAdr
     user.deposit = ZERO_BD
@@ -232,12 +225,12 @@ function fetchAllVotedPools(veNFT: VeNFTEntity, voterAdr: string): void {
       vote.weightPercent = abs(vote.weight.div(vePower).times(BigDecimal.fromString('100')));
 
       updateGaugeVotes(
-        gaugeAdr,
-        voterCtr,
-        pool.value.toHex(),
-        totalWeight,
-        weekly,
-        ve.underlying
+          gaugeAdr,
+          voterCtr,
+          pool.value.toHex(),
+          totalWeight,
+          weekly,
+          ve.underlying
       );
 
       const arr = veNFT.voteIds;
@@ -251,29 +244,31 @@ function fetchAllVotedPools(veNFT: VeNFTEntity, voterAdr: string): void {
 }
 
 function updateGaugeVotes(
-  gaugeAdr: string,
-  voterCtr: VoterAbi,
-  poolAdr: string,
-  totalWeight: BigDecimal,
-  weekly: BigDecimal,
-  veUnderlying: string
+    gaugeAdr: string,
+    voterCtr: VoterAbi,
+    poolAdr: string,
+    totalWeight: BigDecimal,
+    weekly: BigDecimal,
+    veUnderlying: string
 ): void {
   const gauge = GaugeEntity.load(gaugeAdr) as GaugeEntity;
   gauge.voteWeight = formatUnits(voterCtr.weights(Address.fromString(poolAdr)), BigInt.fromI32(18));
   gauge.totalWeight = totalWeight;
   gauge.expectedAmount = gauge.voteWeight.div(totalWeight).times(weekly);
-  gauge.expectAPR = calculateExpectedApr(gaugeAdr, veUnderlying, gauge.expectedAmount);
+  const gaugeCtr = GaugeAbi.bind(Address.fromString(gaugeAdr));
+  gauge.expectAPR = calculateExpectedApr(gaugeAdr, veUnderlying, gauge.expectedAmount, formatUnits(gaugeCtr.totalSupply(), BigInt.fromI32(18)));
+  gauge.expectAPRDerived = calculateExpectedApr(gaugeAdr, veUnderlying, gauge.expectedAmount, gauge.totalDerivedSupply);
   gauge.save();
 }
 
 
 function calculateExpectedApr(
-  gaugeAdr: string,
-  rewardTokenAdr: string,
-  expectedProfit: BigDecimal
+    gaugeAdr: string,
+    rewardTokenAdr: string,
+    expectedProfit: BigDecimal,
+    gaugeTotalSupply: BigDecimal,
 ): BigDecimal {
   const gauge = getOrCreateGauge(gaugeAdr);
-  const gaugeCtr = GaugeAbi.bind(Address.fromString(gaugeAdr));
   const pair = Pair.load(gauge.pair) as Pair;
   const rewardToken = Token.load(rewardTokenAdr);
   if (!rewardToken) {
@@ -287,7 +282,7 @@ function calculateExpectedApr(
     return ZERO_BD;
   }
 
-  const totalSupplyETH = formatUnits(gaugeCtr.totalSupply(), BigInt.fromI32(18)).times(pairPriceETH);
+  const totalSupplyETH = gaugeTotalSupply.times(pairPriceETH);
 
   return calculateApr(ZERO_BI, BigInt.fromI32(60 * 60 * 24 * 7), expectedProfit.times(rewardToken.derivedETH), totalSupplyETH);
 

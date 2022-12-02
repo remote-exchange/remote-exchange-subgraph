@@ -135,6 +135,7 @@ type Pair @entity {
 
     gauge: GaugeEntity
     gaugebribes: BribeEntity
+    fee: Int!
 }
 
 type PairMap @entity(immutable: true) {
@@ -260,9 +261,12 @@ type Swap @entity {
 
 type User @entity {
     id: ID!
-    liquidityPositions: [LiquidityPosition!] @derivedFrom(field: "user")
-    gaugePositions: [GaugePosition!] @derivedFrom(field: "user")
+
     usdSwapped: BigDecimal!
+
+    liquidityPositions: [LiquidityPosition!] @derivedFrom(field: "user")
+    gaugePositions: [GaugeUserPosition!] @derivedFrom(field: "user")
+    nfts: [VeNFTEntity!] @derivedFrom(field: "user")
 }
 
 ##################################################
@@ -362,16 +366,19 @@ type GaugeEntity @entity {
     totalSupply :BigDecimal!
     totalSupplyETH :BigDecimal!
     bribe:BribeEntity
+    totalDerivedSupply :BigDecimal!
 
     voteWeight: BigDecimal!
     expectedAmount: BigDecimal!
     expectAPR: BigDecimal!
+    expectAPRDerived: BigDecimal!
     totalWeight: BigDecimal!
 
     rewardTokensAddresses: [String!]!
 
     rewardTokens: [GaugeRewardToken!]! @derivedFrom(field: "gauge")
     votes: [Vote!]! @derivedFrom(field: "gauge")
+    positions: [GaugeUserPosition!] @derivedFrom(field: "gauge")
 }
 
 type GaugeRewardToken @entity {
@@ -386,24 +393,29 @@ type GaugeRewardToken @entity {
     left:BigDecimal!
     leftETH:BigDecimal!
     apr:BigDecimal!
+    finishPeriod:BigDecimal!
+    derivedAPR:BigDecimal!
 }
 
-type GaugeUser @entity {
+type GaugeAttachment @entity {
     id: ID!
 
     gauge: GaugeEntity!
-    user: String!
+    user: User!
 
     deposit: BigDecimal!
 
     veNFT: VeNFTEntity
 }
 
-type GaugePosition @entity {
+type GaugeUserPosition @entity {
     id: ID!
-    user: User!
+
     gauge: GaugeEntity!
-    stakedLiquidityTokenBalance: BigDecimal!
+    user: User!
+
+    balance: BigDecimal!
+    derivedBalance: BigDecimal!
 }
 
 ##################################################
@@ -459,14 +471,14 @@ type VeNFTEntity @entity {
     id: ID!
 
     ve: VeEntity!
-    user: String!
+    user: User!
 
     lockedAmount: BigDecimal!
     lockedEnd: Int!
     attachments: Int!
     voteIds: [String!]!
 
-    gauges: [GaugeUser!]! @derivedFrom(field: "veNFT")
+    gauges: [GaugeAttachment!]! @derivedFrom(field: "veNFT")
     bribes: [BribeUser!]!  @derivedFrom(field: "veNFT")
     votes: [Vote!]! @derivedFrom(field: "veNFT")
 }

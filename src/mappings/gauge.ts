@@ -1,17 +1,11 @@
 // noinspection JSUnusedGlobalSymbols
 
-import {GaugeEntity, GaugeRewardToken, Pair, Token} from '../types/schema'
+import {GaugeEntity, GaugeRewardToken, GaugeUserPosition, Pair, Token} from '../types/schema'
 import {Address, BigDecimal, BigInt, log} from '@graphprotocol/graph-ts';
 import {ClaimRewards, Deposit, GaugeAbi, NotifyReward, Withdraw} from '../types/templates/GaugeTemplate/GaugeAbi';
 import {PairAbi} from '../types/templates/GaugeTemplate/PairAbi';
-import {BI_18, ZERO_BD, ZERO_BI} from './constants';
-import {
-  calculateApr,
-  convertTokenToDecimal,
-  createGaugePosition,
-  createLiquidityPosition,
-  formatUnits
-} from './helpers';
+import {ZERO_BD, ZERO_BI} from './constants';
+import {calculateApr, formatUnits} from './helpers';
 
 
 // ********************************************************
@@ -20,40 +14,63 @@ import {
 
 export function handleNotify(event: NotifyReward): void {
   const gauge = getGauge(event.address);
-  updateGaugeToken(gauge, event.params.reward.toHexString(), BigInt.fromI32(0), event.block.timestamp);
+  updateGaugeToken(gauge, event.params.reward.toHexString(), event.block.timestamp);
+  gauge.save();
 }
 
 
 export function handleDeposit(event: Deposit): void {
   const gauge = getGauge(event.address);
   const tokens = gauge.rewardTokensAddresses;
+  let pairPriceETH = ZERO_BD;
   for (let i = 0; i < tokens.length; i++) {
-    updateGaugeToken(gauge, tokens[i], event.params.amount, event.block.timestamp);
+    pairPriceETH = updateGaugeToken(gauge, tokens[i], event.block.timestamp);
   }
 
-  let userGaugePosition = createGaugePosition(event.address, event.params.from)
-  userGaugePosition.stakedLiquidityTokenBalance = userGaugePosition.stakedLiquidityTokenBalance.plus(convertTokenToDecimal(event.params.amount, BI_18))
-  userGaugePosition.save()
+  updateGaugeSupply(gauge, event.params.amount, pairPriceETH)
+
+  // USER POSITION
+  const pos = getOrCreateGaugeUserPosition(gauge.id, event.params.from.toHexString());
+  // assume only LP tokens with 18 decimals
+  pos.balance = pos.balance.plus(formatUnits(event.params.amount, BigInt.fromI32(18)))
+  gauge.totalDerivedSupply = gauge.totalDerivedSupply.minus(pos.derivedBalance);
+  pos.derivedBalance = formatUnits(GaugeAbi.bind(event.address).derivedBalance(event.params.from), BigInt.fromI32(18));
+  gauge.totalDerivedSupply = gauge.totalDerivedSupply.plus(pos.derivedBalance);
+
+  pos.save();
+  gauge.save();
 }
 
 export function handleWithdraw(event: Withdraw): void {
   const gauge = getGauge(event.address);
   const tokens = gauge.rewardTokensAddresses;
+  let pairPriceETH = ZERO_BD;
   for (let i = 0; i < tokens.length; i++) {
-    updateGaugeToken(gauge, tokens[i], event.params.amount.neg(), event.block.timestamp);
+    pairPriceETH = updateGaugeToken(gauge, tokens[i], event.block.timestamp);
   }
+  updateGaugeSupply(gauge, event.params.amount.neg(), pairPriceETH)
 
-  let userGaugePosition = createGaugePosition(event.address, event.params.from)
-  userGaugePosition.stakedLiquidityTokenBalance = userGaugePosition.stakedLiquidityTokenBalance.minus(convertTokenToDecimal(event.params.amount, BI_18))
-  userGaugePosition.save()
+
+  // USER POSITION
+  const pos = getOrCreateGaugeUserPosition(gauge.id, event.params.from.toHexString());
+  // assume only LP tokens with 18 decimals
+  pos.balance = pos.balance.minus(formatUnits(event.params.amount, BigInt.fromI32(18)))
+  gauge.totalDerivedSupply = gauge.totalDerivedSupply.minus(pos.derivedBalance);
+  pos.derivedBalance = formatUnits(GaugeAbi.bind(event.address).derivedBalance(event.params.from), BigInt.fromI32(18));
+  gauge.totalDerivedSupply = gauge.totalDerivedSupply.plus(pos.derivedBalance);
+
+  pos.save();
+  gauge.save();
 }
 
 export function handleClaimRewards(event: ClaimRewards): void {
   const gauge = getGauge(event.address);
   const tokens = gauge.rewardTokensAddresses;
   for (let i = 0; i < tokens.length; i++) {
-    updateGaugeToken(gauge, tokens[i], BigInt.fromI32(0), event.block.timestamp);
+    updateGaugeToken(gauge, tokens[i], event.block.timestamp);
   }
+
+  gauge.save();
 }
 
 // ********************************************************
@@ -66,18 +83,17 @@ function getGauge(adr: Address): GaugeEntity {
 }
 
 function updateGaugeToken(
-  gauge: GaugeEntity,
-  rewardTokenAdr: string,
-  amount: BigInt,
-  now: BigInt,
-): void {
+    gauge: GaugeEntity,
+    rewardTokenAdr: string,
+    now: BigInt,
+): BigDecimal {
   const gaugeCtr = GaugeAbi.bind(Address.fromString(gauge.id));
   const token = getOrCreateToken(rewardTokenAdr)
   const pair = Pair.load(gauge.pair) as Pair;
 
-  let rewardToken = GaugeRewardToken.load(gauge.id+rewardTokenAdr);
+  let rewardToken = GaugeRewardToken.load(gauge.id + rewardTokenAdr);
   if (!rewardToken) {
-    rewardToken = new GaugeRewardToken(gauge.id+rewardTokenAdr);
+    rewardToken = new GaugeRewardToken(gauge.id + rewardTokenAdr);
     rewardToken.gauge = gauge.id;
     rewardToken.token = rewardTokenAdr;
 
@@ -105,14 +121,18 @@ function updateGaugeToken(
   rewardToken.totalSupplyETH = totalSupplyETH;
   rewardToken.left = left;
   rewardToken.leftETH = leftETH;
+  rewardToken.finishPeriod = finishPeriod.toBigDecimal();
   rewardToken.apr = calculateApr(now, finishPeriod, leftETH, totalSupplyETH);
+  rewardToken.derivedAPR = calculateApr(now, finishPeriod, leftETH, gauge.totalDerivedSupply.times(pairPriceETH));
 
   rewardToken.save();
 
+  return pairPriceETH;
+}
+
+function updateGaugeSupply(gauge: GaugeEntity, amount: BigInt, pairPriceETH: BigDecimal): void {
   gauge.totalSupply = gauge.totalSupply.plus(formatUnits(amount, BigInt.fromI32(18)));
   gauge.totalSupplyETH = gauge.totalSupply.times(pairPriceETH);
-
-  gauge.save();
 }
 
 function getOrCreateToken(tokenAdr: string): Token {
@@ -138,5 +158,17 @@ function getOrCreateToken(tokenAdr: string): Token {
   }
 
   return token;
+}
+
+function getOrCreateGaugeUserPosition(gaugeAdr: string, userAdr: string): GaugeUserPosition {
+  let pos = GaugeUserPosition.load(gaugeAdr + userAdr);
+  if (!pos) {
+    pos = new GaugeUserPosition(gaugeAdr + userAdr);
+    pos.gauge = gaugeAdr;
+    pos.user = userAdr;
+    pos.balance = ZERO_BD;
+    pos.derivedBalance = ZERO_BD;
+  }
+  return pos;
 }
 
